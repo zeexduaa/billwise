@@ -77,6 +77,16 @@ def test_line_and_discount_parsing():
     assert parse_discount("none") == ("none", 0)
 
 
+def test_port_already_in_use(run):
+    import socket
+    with socket.socket() as busy:
+        busy.bind(("127.0.0.1", 0))
+        busy.listen()
+        port = busy.getsockname()[1]
+        code, _, err = run("serve", "--port", str(port), "--no-browser")
+    assert code == 1 and "already running" in err and "Traceback" not in err
+
+
 def test_no_command_prints_help(run):
     code, out, _ = run()
     assert code == 0 and "serve" in out

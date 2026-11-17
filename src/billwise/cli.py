@@ -187,7 +187,11 @@ def run(args: argparse.Namespace, store: Store, today: date) -> int:
     cmd = args.command
     if cmd == "serve":
         from .web import make_server
-        server = make_server(store, args.port)
+        try:
+            server = make_server(store, args.port)
+        except OSError as err:
+            raise InvoiceError(f"can't use port {args.port} ({err.strerror}). Is billwise already running? "
+                               f"Open http://127.0.0.1:{args.port}/ or pick another port with --port") from None
         url = f"http://127.0.0.1:{server.server_address[1]}/"
         out(f"billwise is running at {url}  (press Ctrl+C to stop)")
         out(f"Data file: {store.path}")
