@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.0 — unreleased
+
+- **Quotes.** Draft and send quotes with their own number format and counter, record the client's answer, and convert an accepted quote into a draft invoice (once). Quotes are kept out of everything that counts money: what's owed, monthly income, tax and the CSV export. Available as `billwise quote ...` and a Quotes tab.
+- **Client statements.** A printable statement of a client's invoices and payments with a running balance (`billwise client statement`, or the Statement button on a client's page).
+- Data files from 0.1 are upgraded automatically the first time they're opened.
+- Invoice commands refuse a quote's number with a hint to use `billwise quote`, so a quote can't be paid or voided through the wrong command.
+
+### Fixed since 0.1
+
+- Removed invoice lines stayed visible in the editor on phones.
+- `billwise serve` crashed with a traceback when the port was in use.
+- Paying an already-paid invoice gave a confusing "more than $0.00 still owed" message.
+
 ## 0.1.0 — unreleased
 
 The first version.

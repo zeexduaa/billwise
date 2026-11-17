@@ -25,14 +25,20 @@ bookkeeping-critical parts carefully and keeps the data with you.
   - **Numbers have no gaps**: a number is only handed out when an invoice is issued, in order, restarting each year if the format has a year (`INV-2026-0001`). Many tax authorities require this.
   - **Void** cancels an issued invoice but keeps its number. **Duplicate** copies any invoice into a new draft for repeat work.
 - **Correct money**: exact decimal arithmetic (never floating point), each line rounded once, the discount shared fairly between tax rates, and the printed tax lines always add up to the printed total. Currencies with no cents (JPY) or three decimals (KWD) are rounded correctly.
+- **Quotes**: send a price before the work starts, with its own numbering (`Q-2026-0001`) and a "valid until" date. Mark it accepted or declined, and turn an accepted quote into an invoice in one click. Quotes never count as money owed, income or tax.
 - **Payments**: record full or partial payments. The status follows automatically: *unpaid*, *partly paid*, *overdue*, *paid*. Overpaying by mistake is caught.
 - **Printable invoice**: a clean A4/Letter page with your business details, "how to pay" instructions, and a PAID / OVERDUE / VOID stamp. Use your browser's "Save as PDF" to send it.
+- **Client statements**: everything a client has been invoiced and has paid, with a running balance and the amount due, ready to print or send. Pick a period and earlier activity becomes the balance brought forward.
 - **Reports**: money owed by how late it is (aging), invoiced and received per month, and tax charged per rate for a period (for your VAT/GST/sales-tax return). Every currency is kept separate.
 - **Export and backup**: CSV of invoices and payments for your accountant or a spreadsheet (safe against spreadsheet formula injection), and a one-click backup of all your data.
 
 | Invoice page | Printable invoice | On a phone |
 |---|---|---|
 | ![Invoice](docs/invoice.png) | ![Printable invoice](docs/printable-invoice.png) | ![Phone](docs/phone.png) |
+
+| A sent quote | Client statement |
+|---|---|
+| ![Quote](docs/quote.png) | ![Statement](docs/statement.png) |
 
 ## Install
 
@@ -66,6 +72,11 @@ billwise invoice html INV-2026-0001          # a printable page; open it and "Sa
 billwise pay INV-2026-0001 500 --method "Bank transfer"
 billwise pay INV-2026-0001                   # pays whatever is still owed
 
+billwise quote new northwind -l "Website redesign | 1 | 3,000" --send
+billwise quote accept Q-2026-0001
+billwise quote convert Q-2026-0001           # a draft invoice with the same lines
+
+billwise client statement northwind --from 2026-01-01
 billwise invoice list --status open
 billwise report owed                         # who owes you, and how late
 billwise report monthly --from 2026-01-01
