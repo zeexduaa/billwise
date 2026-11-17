@@ -114,6 +114,11 @@ def test_other_sites_are_refused(app):
         assert r.status == 303, origin
 
 
+def test_removed_lines_stay_hidden_on_phones(app):
+    css = app.request("GET", "/static/app.css").body.decode()
+    assert "[hidden] { display: none !important; }" in css
+
+
 def test_security_headers(app):
     headers = app.request("GET", "/").headers
     assert "default-src 'self'" in headers["Content-Security-Policy"]

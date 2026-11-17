@@ -70,6 +70,7 @@ APP_CSS = """
 @media (prefers-color-scheme: dark) { :root { --bg:#14171c; --surface:#1c2027; --text:#e8ebf0; --muted:#98a2b3; --line:#2d333d;
         --accent:#7c9bff; --accent-ink:#0d1220; --soft:#1f2a47; --ok:#4cc483; --warn:#f0a35a; --bad:#f07468; color-scheme: dark; } }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; } /* the phone layout gives rows display:block, which beat the hidden attribute */
 body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
 a { color: var(--accent); }
 header { background: var(--surface); border-bottom: 1px solid var(--line); }
