@@ -394,6 +394,11 @@ class Store:
             self.db.execute("UPDATE invoices SET outcome = ? WHERE id = ?", (outcome, quote_id))
         return self.invoice(quote_id)
 
+    def quote_for(self, invoice_id: int) -> Invoice | None:
+        """The quote an invoice was made from, if any."""
+        row = self.db.execute("SELECT * FROM invoices WHERE converted_to = ?", (invoice_id,)).fetchone()
+        return self._invoice(row) if row else None
+
     def convert(self, quote_id: int, *, issue_date: date | None = None) -> Invoice:
         """Turn a sent quote into a draft invoice with the same lines, discount and notes, and mark the quote accepted.
         A quote becomes an invoice at most once; a declined quote can't be converted until the answer is changed."""

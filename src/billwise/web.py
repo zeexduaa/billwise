@@ -17,7 +17,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, urlsplit
 
 from . import __version__, reports
-from .model import STATUSES, Client, Invoice, InvoiceError, Item, Payment
+from .model import QUOTE_STATUSES, STATUSES, Client, Invoice, InvoiceError, Item, Payment
 from .money import MoneyError, format_money, format_rate, parse_decimal
 from .render import STATUS_TEXT, e, invoice_document, nice_date, number_text
 from .store import DEFAULTS, Store
@@ -213,7 +213,7 @@ class App:
 
     def page(self, title: str, body: str, *, tab: str = "", status: int = 200) -> Response:
         name = self.store.setting("business_name") or "billwise"
-        tabs = [("/", "Dashboard", "home"), ("/invoices", "Invoices", "invoices"), ("/clients", "Clients", "clients"),
+        tabs = [("/", "Dashboard", "home"), ("/invoices", "Invoices", "invoices"), ("/quotes", "Quotes", "quotes"), ("/clients", "Clients", "clients"),
                 ("/reports", "Reports", "reports"), ("/settings", "Settings", "settings")]
         nav = "".join(f"<a href='{href}' class='{'on' if key == tab else ''}'>{label}</a>" for href, label, key in tabs)
         flash, self.flash = self.flash, ""
@@ -235,6 +235,11 @@ class App:
             ("GET", r"/invoices", self.invoice_list),
             ("GET", r"/invoices/new", self.invoice_new_form),
             ("POST", r"/invoices/new", self.invoice_create),
+            ("GET", r"/quotes", self.quote_list),
+            ("GET", r"/quotes/new", self.quote_new_form),
+            ("POST", r"/quotes/new", self.quote_create),
+            ("POST", r"/invoices/(\d+)/(accept|decline|reopen)", self.quote_answer),
+            ("POST", r"/invoices/(\d+)/convert", self.quote_convert),
             ("GET", r"/invoices/(\d+)", self.invoice_view),
             ("GET", r"/invoices/(\d+)/edit", self.invoice_edit_form),
             ("POST", r"/invoices/(\d+)/edit", self.invoice_save),
@@ -265,7 +270,7 @@ class App:
             if m:
                 known_path = True
                 if verb == method:
-                    return handler(query, form, *(int(g) for g in m.groups()))
+                    return handler(query, form, *(int(g) if g.isdigit() else g for g in m.groups()))
         if known_path:
             return Response(405, b"Method not allowed", {"Content-Type": "text/plain"})
         return self.page("Not found", "<div class='empty'><h1>There's no such page</h1><a class='btn' href='/'>Go to the dashboard</a></div>", status=404)
@@ -273,10 +278,18 @@ class App:
     def client_names(self) -> dict[int, str]:
         return {c.id: c.name for c in self.store.clients(archived=True)}  # type: ignore[misc]
 
-    def invoice_table(self, invoices: list[Invoice], names: dict[int, str], *, client_column: bool = True) -> str:
+    def invoice_table(self, invoices: list[Invoice], names: dict[int, str], *, client_column: bool = True, quotes: bool = False) -> str:
         today = self.today()
         if not invoices:
             return "<p class='muted'>Nothing here.</p>"
+        if quotes:
+            rows = "".join(f"<tr><td><a href='/invoices/{q.id}'>{e(q.label)}</a></td>"
+                           + (f"<td>{e(names.get(q.client_id, '?'))}</td>" if client_column else "")
+                           + f"<td class='hide-sm'>{e(nice_date(q.issue_date))}</td><td>{e(nice_date(q.due_date))}</td>"
+                           f"<td class='n'>{money(q.totals().total, q.currency)}</td><td>{pill(q.status(today))}</td></tr>" for q in invoices)
+            head = ("<tr><th>Quote</th>" + ("<th>Client</th>" if client_column else "")
+                    + "<th class='hide-sm'>Date</th><th>Valid until</th><th class='n'>Total</th><th>Status</th></tr>")
+            return f"<div class='scroll'><table class='list'><thead>{head}</thead><tbody>{rows}</tbody></table></div>"
         rows = []
         for inv in invoices:
             t = inv.totals()
@@ -318,6 +331,14 @@ class App:
         for cur, amount in received.items():
             if amount:
                 cards.append(f"<div class='card'><div class='muted small'>Received this month ({e(cur)})</div><div class='big'>{money(amount, cur)}</div></div>")
+        waiting = [q for q in self.store.invoices(kind="quote") if q.status(today) == "sent"]
+        if waiting:
+            value = {}
+            for q in waiting:
+                value[q.currency] = value.get(q.currency, Decimal(0)) + q.totals().total
+            worth = " + ".join(money(v, c) for c, v in sorted(value.items()))
+            cards.append(f"<div class='card'><div class='muted small'>Quotes waiting for an answer</div><div class='big'>{len(waiting)}</div>"
+                         f"<div class='small'><a href='/quotes?status=open'>worth {worth}</a></div></div>")
         drafts = [i for i in invoices if i.state == "draft"]
         cards.append(f"<div class='card'><div class='muted small'>Drafts</div><div class='big'>{len(drafts)}</div>"
                      f"<div class='small'><a href='/invoices?status=draft'>{'review drafts' if drafts else 'none waiting'}</a></div></div>")
@@ -331,47 +352,63 @@ class App:
 
     # -- invoices --------------------------------------------------------------------------------
 
-    def invoice_list(self, query, form) -> Response:
+    def invoice_list(self, query, form, kind: str = "invoice") -> Response:
         today = self.today()
+        quotes = kind == "quote"
         status = self.one(query, "status")
         text = self.one(query, "q").strip()
         names = self.client_names()
-        invoices = self.store.invoices()
-        if status in STATUSES:
+        invoices = self.store.invoices(kind=kind)
+        if status in (QUOTE_STATUSES if quotes else STATUSES):
             invoices = [i for i in invoices if i.status(today) == status]
         elif status == "open":
-            invoices = reports.open_invoices(invoices, today)
+            invoices = [q for q in invoices if q.status(today) == "sent"] if quotes else reports.open_invoices(invoices, today)
         if text:
             needle = text.casefold()
             invoices = [i for i in invoices if needle in i.label.casefold() or needle in names.get(i.client_id, "").casefold()
                         or needle in i.reference.casefold()]
-        chips = [("", "All"), ("open", "Owed")] + [(s, STATUS_TEXT[s]) for s in STATUSES]
-        chip_html = "".join(f"<a class='{'on' if s == status else ''}' href='/invoices?status={s}{'&q=' + quote(text) if text else ''}'>{e(label)}</a>"
+        base = "/quotes" if quotes else "/invoices"
+        chips = ([("", "All"), ("open", "Waiting for an answer")] + [(s, STATUS_TEXT[s]) for s in QUOTE_STATUSES if s != "sent"] if quotes
+                 else [("", "All"), ("open", "Owed")] + [(s, STATUS_TEXT[s]) for s in STATUSES])
+        chip_html = "".join(f"<a class='{'on' if s == status else ''}' href='{base}?status={s}{'&q=' + quote(text) if text else ''}'>{e(label)}</a>"
                             for s, label in chips)
-        search = (f"<form method='get' action='/invoices' class='row' style='margin-bottom:.8rem'><input type='hidden' name='status' value='{e(status)}'>"
+        search = (f"<form method='get' action='{base}' class='row' style='margin-bottom:.8rem'><input type='hidden' name='status' value='{e(status)}'>"
                   f"<input type='search' name='q' value='{e(text)}' placeholder='Search number, client or reference' style='max-width:22rem'>"
                   f"<button class='btn'>Search</button></form>")
-        body = (f"<div class='row spread'><h1>Invoices</h1><a class='btn primary' href='/invoices/new'>+ New invoice</a></div>"
-                f"<div class='chips'>{chip_html}</div>{search}{self.invoice_table(invoices, names)}")
-        return self.page("Invoices", body, tab="invoices")
+        title = "Quotes" if quotes else "Invoices"
+        intro = ("<p class='muted'>Send a price before the work starts. When the client says yes, turn the quote into an invoice in one click.</p>"
+                 if quotes and not self.store.invoices(kind="quote") else "")
+        body = (f"<div class='row spread'><h1>{title}</h1><a class='btn primary' href='{base}/new'>+ New {kind}</a></div>{intro}"
+                f"<div class='chips'>{chip_html}</div>{search}{self.invoice_table(invoices, names, quotes=quotes)}")
+        return self.page(title, body, tab="quotes" if quotes else "invoices")
 
-    def invoice_new_form(self, query, form) -> Response:
+    def quote_list(self, query, form) -> Response:
+        return self.invoice_list(query, form, "quote")
+
+    def invoice_new_form(self, query, form, kind: str = "invoice") -> Response:
         clients = self.store.clients()
         if not clients:
-            return self.done("Add a client first: invoices are addressed to someone.", "/clients/new")
+            return self.done(f"Add a client first: {kind}s are addressed to someone.", "/clients/new")
         chosen = self.one(query, "client")
         options = "".join(f"<option value='{c.id}' {'selected' if str(c.id) == chosen else ''}>{e(c.name)}</option>" for c in clients)
-        body = (f"<h1>New invoice</h1><form method='post' action='/invoices/new' class='card' style='max-width:32rem'>{self.csrf()}"
+        base = "/quotes" if kind == "quote" else "/invoices"
+        body = (f"<h1>New {kind}</h1><form method='post' action='{base}/new' class='card' style='max-width:32rem'>{self.csrf()}"
                 f"<div class='field'><label for='client'>Who is it for?</label><select id='client' name='client'>{options}</select></div>"
                 f"<p class='small muted'>It starts as a draft: you can change anything until you issue it.</p>"
                 f"<div class='row'><button class='btn primary'>Create draft</button><a class='btn' href='/clients/new'>New client</a></div></form>")
-        return self.page("New invoice", body, tab="invoices")
+        return self.page(f"New {kind}", body, tab="quotes" if kind == "quote" else "invoices")
 
-    def invoice_create(self, query, form) -> Response:
+    def quote_new_form(self, query, form) -> Response:
+        return self.invoice_new_form(query, form, "quote")
+
+    def quote_create(self, query, form) -> Response:
+        return self.invoice_create(query, form, "quote")
+
+    def invoice_create(self, query, form, kind: str = "invoice") -> Response:
         client_id = self.one(form, "client")
         if not client_id.isdigit():
             raise Problem("choose a client")
-        inv = self.store.new_invoice(int(client_id), issue_date=self.today())
+        inv = self.store.new_invoice(int(client_id), issue_date=self.today(), kind=kind)
         rate = Decimal(self.store.setting("default_tax_rate"))
         return Response.redirect(f"/invoices/{inv.id}/edit" + (f"?tax={rate}" if rate else ""))
 
@@ -383,18 +420,33 @@ class App:
         status = inv.status(today)
         actions = []
         side = []
+        kind = inv.kind
         if inv.state == "draft":
             actions += [f"<a class='btn primary' href='/invoices/{inv.id}/edit'>Edit</a>",
-                        self.button(f"/invoices/{inv.id}/issue", "Issue invoice", "btn primary" if inv.items else "btn",
-                                    "Issue this invoice? It gets its number and can't be edited afterwards."),
+                        self.button(f"/invoices/{inv.id}/issue", "Send quote" if inv.is_quote else "Issue invoice", "btn primary" if inv.items else "btn",
+                                    f"Issue this {kind}? It gets its number and can't be edited afterwards."),
                         self.button(f"/invoices/{inv.id}/delete", "Delete draft", "btn danger", "Delete this draft?")]
         else:
             actions.append(f"<a class='btn primary' href='/invoices/{inv.id}/print' target='_blank' rel='noopener'>Print / save PDF</a>")
+        open_quote = inv.is_quote and inv.state == "issued" and not inv.converted_to
+        if open_quote:
+            if inv.outcome != "declined":
+                actions.append(self.button(f"/invoices/{inv.id}/convert", "Turn into invoice", "btn primary"))
+            if not inv.outcome:
+                actions += [self.button(f"/invoices/{inv.id}/accept", "Accepted"), self.button(f"/invoices/{inv.id}/decline", "Declined")]
+            else:
+                actions.append(self.button(f"/invoices/{inv.id}/reopen", "Clear answer"))
         actions.append(self.button(f"/invoices/{inv.id}/duplicate", "Duplicate"))
-        if inv.state == "issued" and not inv.payments:
+        if inv.state == "issued" and not inv.payments and not inv.converted_to:
             actions.append(self.button(f"/invoices/{inv.id}/void", "Void", "btn danger",
-                                       "Void this invoice? It keeps its number but will no longer count as owed."))
-        if inv.state == "issued" and t.balance > 0:
+                                       "Void this quote?" if inv.is_quote else "Void this invoice? It keeps its number but will no longer count as owed."))
+        if inv.converted_to:
+            made = self.store.invoice(inv.converted_to)
+            side.append(f"<div class='card'><div class='muted small'>Became invoice</div><a href='/invoices/{made.id}'><strong>{e(made.label)}</strong></a></div>")
+        source = self.store.quote_for(inv.id) if not inv.is_quote else None
+        if source:
+            side.append(f"<div class='card'><div class='muted small'>Made from quote</div><a href='/invoices/{source.id}'><strong>{e(source.label)}</strong></a></div>")
+        if not inv.is_quote and inv.state == "issued" and t.balance > 0:
             side.append(f"""<form method='post' action='/invoices/{inv.id}/payments' class='card'>{self.csrf()}
 <h2 style='margin-top:0'>Record a payment</h2>
 <div class='field'><label for='amount'>Amount ({e(inv.currency)})</label><input id='amount' name='amount' inputmode='decimal' value='{e(t.balance)}' required></div>
@@ -410,14 +462,23 @@ class App:
                            + "</td></tr>" for p in inv.payments)
             side.append(f"<div class='card'><h2 style='margin-top:0'>Payments</h2><table class='list'><tbody>{rows}</tbody></table>"
                         f"<p class='small muted'>Still owed: <strong>{money(t.balance, inv.currency)}</strong></p></div>")
-        late = f" · {inv.days_overdue(today)} days late" if status == "overdue" else ""
+        late = (f" · {inv.days_overdue(today)} days late" if status == "overdue"
+                else f" · valid until {nice_date(inv.due_date)}" if status == "sent" else "")
         side.insert(0, f"<div class='card'><div class='muted small'>Client</div><a href='/clients/{client.id}'><strong>{e(client.name)}</strong></a>"
                        f"<div class='muted small' style='margin-top:.6rem'>Total</div><div class='big'>{money(t.total, inv.currency)}</div>"
                        f"<div class='small'>{pill(status)}<span class='muted'>{e(late)}</span></div></div>")
         body = (f"<div class='row spread'><h1>{e(inv.label)}</h1><div class='row'>{''.join(actions)}</div></div>"
                 f"<div class='side'><iframe class='preview' title='Invoice preview' src='/invoices/{inv.id}/print?embed=1'></iframe>"
                 f"<div style='display:grid;gap:1rem'>{''.join(side)}</div></div>")
-        return self.page(inv.label, body, tab="invoices")
+        return self.page(inv.label, body, tab="quotes" if inv.is_quote else "invoices")
+
+    def quote_answer(self, query, form, quote_id: int, answer: str) -> Response:
+        quote = self.store.set_outcome(quote_id, {"accept": "accepted", "decline": "declined", "reopen": ""}[answer])
+        return self.done(f"{quote.label} marked {STATUS_TEXT[quote.status(self.today())].lower()}.", f"/invoices/{quote_id}")
+
+    def quote_convert(self, query, form, quote_id: int) -> Response:
+        inv = self.store.convert(quote_id, issue_date=self.today())
+        return self.done(f"Made a draft invoice from the quote. Check the dates, then issue it.", f"/invoices/{inv.id}")
 
     def invoice_print(self, query, form, invoice_id: int) -> Response:
         inv = self.store.invoice(invoice_id)
@@ -458,8 +519,8 @@ class App:
 <form method='post' action='/invoices/{inv.id}/edit'>{self.csrf()}
 <div class='card'><div class='grid'>
 <div class='field'><label for='client'>Client</label><select id='client' name='client'>{client_opts}</select></div>
-<div class='field'><label for='issue'>Invoice date</label><input id='issue' type='date' name='issue_date' value='{e(get("issue_date", inv.issue_date.isoformat()))}' required></div>
-<div class='field'><label for='due'>Due date</label><input id='due' type='date' name='due_date' value='{e(get("due_date", inv.due_date.isoformat()))}' required></div>
+<div class='field'><label for='issue'>{"Quote" if inv.is_quote else "Invoice"} date</label><input id='issue' type='date' name='issue_date' value='{e(get("issue_date", inv.issue_date.isoformat()))}' required></div>
+<div class='field'><label for='due'>{"Valid until" if inv.is_quote else "Due date"}</label><input id='due' type='date' name='due_date' value='{e(get("due_date", inv.due_date.isoformat()))}' required></div>
 <div class='field'><label for='currency'>Currency</label><input id='currency' name='currency' value='{e(get("currency", inv.currency))}' maxlength='3' style='text-transform:uppercase' required></div>
 <div class='field'><label for='ref'>Reference <span class='hint'>e.g. their PO number</span></label><input id='ref' name='reference' value='{e(get("reference", inv.reference))}' maxlength='80'></div>
 </div></div>
@@ -474,11 +535,11 @@ class App:
 <div class='field'><label for='dtype'>Discount</label><select id='dtype' name='discount_type'>{dopts}</select></div>
 <div class='field'><label for='dval'>Discount value <span class='hint'>% or amount</span></label><input id='dval' name='discount_value' value='{e(get("discount_value", number_text(inv.discount_value)))}' inputmode='decimal'></div>
 </div>
-<div class='field'><label for='notes'>Notes for the client <span class='hint'>shown on the invoice</span></label><textarea id='notes' name='notes'>{e(get("notes", inv.notes))}</textarea></div></div>
+<div class='field'><label for='notes'>Notes for the client <span class='hint'>shown on the {e(inv.kind)}</span></label><textarea id='notes' name='notes'>{e(get("notes", inv.notes))}</textarea></div></div>
 <div class='row' style='margin-top:1rem'><button class='btn primary' name='then' value='view'>Save draft</button>
-<button class='btn' name='then' value='issue'>Save and issue</button></div>
+<button class='btn' name='then' value='issue'>{"Save and send" if inv.is_quote else "Save and issue"}</button></div>
 </form>"""
-        return self.page(f"Edit {inv.label}", body, tab="invoices", status=400 if error else 200)
+        return self.page(f"Edit {inv.label}", body, tab="quotes" if inv.is_quote else "invoices", status=400 if error else 200)
 
     def invoice_edit_form(self, query, form, invoice_id: int) -> Response:
         inv = self.store.invoice(invoice_id)
@@ -491,8 +552,8 @@ class App:
         if not client.isdigit():
             raise Problem("choose a client")
         inv.client_id = int(client)
-        inv.issue_date = parse_date(self.one(form, "issue_date"), "the invoice date")
-        inv.due_date = parse_date(self.one(form, "due_date"), "the due date")
+        inv.issue_date = parse_date(self.one(form, "issue_date"), f"the {inv.kind} date")
+        inv.due_date = parse_date(self.one(form, "due_date"), "the valid-until date" if inv.is_quote else "the due date")
         inv.currency = self.one(form, "currency").strip().upper()
         inv.reference = self.one(form, "reference")[:80]
         inv.notes = self.one(form, "notes")[:4000]
@@ -618,16 +679,19 @@ class App:
         invoices = self.store.invoices(client_id=client_id)
         balances = {cur: amount for (cid, cur), amount in reports.client_balances(invoices, today).items()}
         owed = " + ".join(money(a, c) for c, a in sorted(balances.items())) or "nothing"
-        actions = [f"<a class='btn primary' href='/invoices/new?client={client.id}'>+ New invoice</a>"] if not client.archived else []
+        quotes = self.store.invoices(client_id=client_id, kind="quote")
+        actions = [f"<a class='btn primary' href='/invoices/new?client={client.id}'>+ New invoice</a>",
+                   f"<a class='btn' href='/quotes/new?client={client.id}'>+ New quote</a>"] if not client.archived else []
         actions.append(self.button(f"/clients/{client.id}/archive", "Restore" if client.archived else "Archive"))
-        if not invoices:
+        if not invoices and not quotes:
             actions.append(self.button(f"/clients/{client.id}/delete", "Delete", "btn danger", f"Delete {client.name}?"))
         body = (f"<div class='row spread'><h1>{e(client.name)}{' <span class=pill>archived</span>' if client.archived else ''}</h1>"
                 f"<div class='row'>{''.join(actions)}</div></div>"
                 f"<div class='cards'><div class='card'><div class='muted small'>Owes you</div><div class='big'>{owed}</div></div>"
                 f"<div class='card'><div class='muted small'>Invoices</div><div class='big'>{len(invoices)}</div></div></div>"
                 f"<h2>Invoices</h2>{self.invoice_table(invoices, {}, client_column=False)}"
-                f"<h2>Details</h2>{self.client_form(draft or client, f'/clients/{client.id}', 'Save changes', error)}")
+                + (f"<h2>Quotes</h2>{self.invoice_table(quotes, {}, client_column=False, quotes=True)}" if quotes else "")
+                + f"<h2>Details</h2>{self.client_form(draft or client, f'/clients/{client.id}', 'Save changes', error)}")
         return self.page(client.name, body, tab="clients", status=400 if error else 200)
 
     def client_save(self, query, form, client_id: int) -> Response:
@@ -729,6 +793,7 @@ class App:
 <h2>Invoices</h2><div class='card'><div class='grid'>
 {field("currency", "Usual currency", "3 letters, e.g. USD, EUR, PKR")}{field("terms_days", "Payment terms", "days until due")}
 {field("default_tax_rate", "Usual tax rate", "% for new lines, 0 for none")}{field("number_format", "Invoice numbers", "{YYYY} year, {NNNN} counter")}</div>
+<div class='grid'>{field("quote_number_format", "Quote numbers", "a separate counter")}{field("quote_valid_days", "Quotes are valid for", "days")}</div>
 {field("payment_details", "How to pay you", "bank details or a payment link, printed on unpaid invoices", "textarea")}
 {field("footer", "Footer", "a short line at the bottom")}</div>
 <div class='row' style='margin-top:1rem'><button class='btn primary'>Save settings</button></div></form>

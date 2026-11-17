@@ -173,3 +173,44 @@ def test_real_server_round_trip(tmp_path):
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_quote_flow_in_the_browser(app):
+    app.store.add_client(Client("Acme"))
+    r = post(app, "/quotes/new", client="1")
+    quote_id = int(r.headers["Location"].split("/")[2])
+    edit = text(app.request("GET", f"/invoices/{quote_id}/edit"))
+    assert "Valid until" in edit and "Save and send" in edit
+    r = post(app, f"/invoices/{quote_id}/edit", client="1", issue_date="2026-06-15", due_date="2026-07-15", currency="USD",
+             desc=["Website"], qty=["1"], price=["2,000"], tax=[""], discount_type="none", then="issue")
+    page = text(app.request("GET", r.headers["Location"]))
+    assert "Issued as Q-2026-0001" in page and "Turn into invoice" in page and "Record a payment" not in page
+    assert "Quotes waiting for an answer" in text(app.request("GET", "/"))
+    assert "Q-2026-0001" in text(app.request("GET", "/quotes?status=open"))
+    assert "Q-2026-0001" not in text(app.request("GET", "/invoices"))
+    r = post(app, f"/invoices/{quote_id}/decline")
+    assert "marked declined" in text(app.request("GET", r.headers["Location"]))
+    assert "Turn into invoice" not in text(app.request("GET", f"/invoices/{quote_id}"))
+    post(app, f"/invoices/{quote_id}/reopen")
+    r = post(app, f"/invoices/{quote_id}/convert")
+    invoice_id = int(r.headers["Location"].split("/")[2])
+    page = text(app.request("GET", f"/invoices/{invoice_id}"))
+    assert "Made from quote" in page and "Q-2026-0001" in page
+    assert "Became invoice" in text(app.request("GET", f"/invoices/{quote_id}"))
+    assert "Invoiced" in text(app.request("GET", "/clients/1"))
+    assert post(app, f"/invoices/{quote_id}/convert").status == 400   # only once
+    assert post(app, f"/invoices/{invoice_id}/accept").status == 400  # not a quote
+
+
+def test_client_with_only_quotes_offers_no_delete(app):
+    app.store.add_client(Client("Acme"))
+    app.store.new_invoice(1, kind="quote")
+    page = text(app.request("GET", "/clients/1"))
+    assert "/clients/1/delete" not in page and "<h2>Quotes</h2>" in page
+
+
+def test_quote_settings(app):
+    assert "Quote numbers" in text(app.request("GET", "/settings"))
+    assert post(app, "/settings", quote_number_format="EST-{NNN}", quote_valid_days="10").status == 303
+    assert app.store.setting("quote_valid_days") == "10"
+    assert post(app, "/settings", quote_valid_days="0").status == 400
