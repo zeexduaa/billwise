@@ -1,6 +1,6 @@
 # Roadmap
 
-billwise 0.1 covers the core of invoicing: clients, invoices, payments, reports and a printable invoice. These are the next
+billwise 0.2 covers the core of invoicing: clients, quotes, invoices, payments, statements and reports. These are the next
 pieces, roughly in order. Each one is a real gap a small business will hit.
 
 ## Next
