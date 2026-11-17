@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "billwise"
+version = "0.1.0"
+description = "Invoices, clients and payments for freelancers and small businesses, kept on your own computer"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [{ name = "Syed Ali" }]
+keywords = ["invoice", "invoicing", "billing", "freelance", "small-business", "accounting"]
+dependencies = []
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Office/Business :: Financial :: Accounting",
+    "Environment :: Web Environment",
+    "Environment :: Console",
+]
+
+[project.scripts]
+billwise = "billwise.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/zeexduaa/billwise"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
