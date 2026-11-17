@@ -106,7 +106,7 @@ def test_payments(store):
     assert inv.status(TODAY) == "partial" and inv.totals().balance == D("40")
     inv = store.add_payment(inv.id, Payment(TODAY, D("40")))
     assert inv.status(TODAY) == "paid"
-    with pytest.raises(InvoiceError):
+    with pytest.raises(InvoiceError, match="already fully paid"):
         store.add_payment(inv.id, Payment(TODAY, D("1")))
     inv = store.delete_payment(inv.id, inv.payments[-1].id)
     assert inv.status(TODAY) == "partial"

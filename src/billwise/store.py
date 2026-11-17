@@ -353,6 +353,8 @@ class Store:
         if round_money(payment.amount, inv.currency) != payment.amount:
             raise InvoiceError(f"{inv.currency} amounts can't have that many decimal places")
         balance = inv.totals().balance
+        if balance <= 0 and not allow_overpay:
+            raise InvoiceError(f"{inv.label} is already fully paid")
         if payment.amount > balance and not allow_overpay:
             raise InvoiceError(f"that's more than the {format_money(balance, inv.currency)} still owed on {inv.label}")
         if payment.date < inv.issue_date - timedelta(days=366) or payment.date > date.today() + timedelta(days=1):
