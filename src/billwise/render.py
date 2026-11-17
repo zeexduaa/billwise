@@ -92,7 +92,10 @@ def invoice_document(inv: Invoice, client: Client, settings: dict[str, str], tod
     if t.paid:
         totals.append(f"<tr><td>Paid</td><td>−{money(t.paid)}</td></tr>")
         totals.append(f"<tr class='due'><td>Balance due</td><td>{money(t.balance)}</td></tr>")
-    stamp = f"<div class='stamp {e(status)}'>{e(STATUS_TEXT[status])}</div>" if status in ("paid", "void", "overdue", "draft") else ""
+    stamped = ("draft", "void", "accepted", "declined", "expired", "converted") if inv.is_quote else ("paid", "void", "overdue", "draft")
+    stamp_class = {"accepted": "paid", "converted": "paid", "declined": "void", "expired": "overdue"}.get(status, status)
+    stamp = f"<div class='stamp {e(stamp_class)}'>{e(STATUS_TEXT[status])}</div>" if status in stamped else ""
+    title = "QUOTE" if inv.is_quote else "INVOICE"
     business = settings.get("business_name") or "Your business name"
     from_block = "".join([
         f"<h1>{e(business)}</h1>",
@@ -106,13 +109,14 @@ def invoice_document(inv: Invoice, client: Client, settings: dict[str, str], tod
         f"<div class='muted'>{e(client.email)}</div>" if client.email else "",
         f"<div class='muted'>Tax ID: {e(client.tax_id)}</div>" if client.tax_id else "",
     ])
-    meta = [("Invoice", inv.label), ("Date", nice_date(inv.issue_date)), ("Due", nice_date(inv.due_date))]
+    meta = [("Quote" if inv.is_quote else "Invoice", inv.label), ("Date", nice_date(inv.issue_date)),
+            ("Valid until" if inv.is_quote else "Due", nice_date(inv.due_date))]
     if inv.reference:
         meta.append(("Reference", inv.reference))
     notes = []
     if inv.notes:
         notes.append(f"<div><div class='label'>Notes</div><p>{e(inv.notes)}</p></div>")
-    if settings.get("payment_details") and status not in ("paid", "void"):
+    if settings.get("payment_details") and not inv.is_quote and status not in ("paid", "void"):
         notes.append(f"<div><div class='label'>How to pay</div><p>{e(settings['payment_details'])}</p></div>")
     head = (f"<tr><th>Description</th><th class='n'>Qty</th><th class='n'>Price</th>"
             + ("<th class='n'>Tax</th>" if any_tax else "") + "<th class='n'>Amount</th></tr>")
@@ -120,10 +124,10 @@ def invoice_document(inv: Invoice, client: Client, settings: dict[str, str], tod
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{e(inv.label)} · {e(client.name)}</title><style>{INVOICE_CSS}</style></head>
 <body>{toolbar}<main class="sheet">
-<div class="head"><div class="from">{from_block}</div><div class="title"><h2>INVOICE</h2><div class="muted">{e(inv.label)}</div>{stamp}</div></div>
+<div class="head"><div class="from">{from_block}</div><div class="title"><h2>{title}</h2><div class="muted">{e(inv.label)}</div>{stamp}</div></div>
 <div class="meta"><div><div class="label">Bill to</div>{to_block}</div>
 <table>{''.join(f'<tr><td>{e(k)}</td><td>{e(v)}</td></tr>' for k, v in meta)}
-<tr><td><strong>Amount due</strong></td><td><strong>{money(t.balance if inv.state == 'issued' else t.total)}</strong></td></tr></table></div>
+<tr><td><strong>{"Quoted total" if inv.is_quote else "Amount due"}</strong></td><td><strong>{money(t.balance if inv.state == 'issued' else t.total)}</strong></td></tr></table></div>
 <table class="items"><thead>{head}</thead><tbody>{rows or "<tr><td colspan='5' class='muted'>No lines yet.</td></tr>"}</tbody></table>
 <table class="totals">{''.join(totals)}</table>
 <div class="notes">{''.join(notes)}</div>

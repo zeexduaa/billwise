@@ -88,3 +88,15 @@ def test_quotes_never_count_as_money_owed(store):
     assert len(store.invoices(kind="quote")) == 1 and len(store.invoices(kind=None)) == 1
     everything = store.invoices()
     assert reports.aging(everything, TODAY) == {} and reports.monthly(everything) == {} and reports.tax_summary(everything) == {}
+
+
+def test_printed_quote(store):
+    from billwise.render import invoice_document
+    store.save_settings({"payment_details": "IBAN PK00 1234"})
+    q = sent_quote(store)
+    page = invoice_document(q, store.client(1), store.settings(), TODAY)
+    assert "<h2>QUOTE</h2>" in page and "Valid until" in page and "Quoted total" in page
+    assert "IBAN" not in page          # nobody should pay a quote
+    assert "<h2>INVOICE</h2>" not in page
+    accepted = store.set_outcome(q.id, "accepted")
+    assert ">Accepted</div>" in invoice_document(accepted, store.client(1), store.settings(), TODAY)
