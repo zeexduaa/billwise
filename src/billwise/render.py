@@ -125,7 +125,7 @@ def invoice_document(inv: Invoice, client: Client, settings: dict[str, str], tod
 <title>{e(inv.label)} · {e(client.name)}</title><style>{INVOICE_CSS}</style></head>
 <body>{toolbar}<main class="sheet">
 <div class="head"><div class="from">{from_block}</div><div class="title"><h2>{title}</h2><div class="muted">{e(inv.label)}</div>{stamp}</div></div>
-<div class="meta"><div><div class="label">Bill to</div>{to_block}</div>
+<div class="meta"><div><div class="label">{'Prepared for' if inv.is_quote else 'Bill to'}</div>{to_block}</div>
 <table>{''.join(f'<tr><td>{e(k)}</td><td>{e(v)}</td></tr>' for k, v in meta)}
 <tr><td><strong>{"Quoted total" if inv.is_quote else "Amount due"}</strong></td><td><strong>{money(t.balance if inv.state == 'issued' else t.total)}</strong></td></tr></table></div>
 <table class="items"><thead>{head}</thead><tbody>{rows or "<tr><td colspan='5' class='muted'>No lines yet.</td></tr>"}</tbody></table>

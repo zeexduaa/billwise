@@ -96,6 +96,7 @@ def test_printed_quote(store):
     q = sent_quote(store)
     page = invoice_document(q, store.client(1), store.settings(), TODAY)
     assert "<h2>QUOTE</h2>" in page and "Valid until" in page and "Quoted total" in page
+    assert "Prepared for" in page and "Bill to" not in page  # nothing is being billed yet
     assert "IBAN" not in page          # nobody should pay a quote
     assert "<h2>INVOICE</h2>" not in page
     accepted = store.set_outcome(q.id, "accepted")
