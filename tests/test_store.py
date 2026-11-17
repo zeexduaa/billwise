@@ -234,3 +234,22 @@ def test_csv_is_safe_for_spreadsheets(store):
     text = reports.invoices_csv(store.invoices(), names, TODAY)
     assert "'=HYPERLINK" in text and "100.00" in text
     assert "'-cash" in reports.payments_csv(store.invoices(), names)
+
+
+def test_version_1_files_are_upgraded_in_place(tmp_path):
+    """A data file from billwise 0.1 opens in the new version with its invoices intact, and gains the quote columns."""
+    from billwise.store import SCHEMA
+    path = tmp_path / "old.db"
+    db = sqlite3.connect(path)
+    db.executescript(SCHEMA[0] + "; PRAGMA user_version = 1;")
+    db.execute("INSERT INTO clients (name, created) VALUES ('Old Client', '2026-01-01')")
+    db.execute("INSERT INTO invoices (number, client_id, state, currency, issue_date, due_date, created) "
+               "VALUES ('INV-2026-0001', 1, 'issued', 'USD', '2026-01-02', '2026-01-16', '2026-01-02')")
+    db.execute("INSERT INTO items (invoice_id, position, description, quantity, unit_price) VALUES (1, 0, 'Work', '1', '250')")
+    db.commit()
+    db.close()
+    store = Store(path)
+    assert store.db.execute("PRAGMA user_version").fetchone()[0] == len(SCHEMA)
+    inv = store.find_invoice("INV-2026-0001")
+    assert inv.kind == "invoice" and inv.outcome == "" and inv.converted_to is None
+    assert inv.totals().total == D("250")

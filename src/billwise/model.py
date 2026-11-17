@@ -103,10 +103,17 @@ class Invoice:
     id: int | None = None
     created: str = ""
     issued_at: str = ""
+    kind: str = "invoice"           # invoice | quote (for a quote, due_date is the date the offer is valid until)
+    outcome: str = ""               # quotes only: "", accepted or declined
+    converted_to: int | None = None # quotes only: the invoice made from it
+
+    @property
+    def is_quote(self) -> bool:
+        return self.kind == "quote"
 
     @property
     def label(self) -> str:
-        return self.number or f"Draft {self.id}"
+        return self.number or (f"Draft quote {self.id}" if self.is_quote else f"Draft {self.id}")
 
     def totals(self) -> Totals:
         return compute_totals(self)

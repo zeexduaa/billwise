@@ -39,6 +39,14 @@ SCHEMA = [
     CREATE INDEX payments_by_invoice ON payments(invoice_id, date);
     CREATE INDEX invoices_by_client ON invoices(client_id);
     """,
+    # version 2: quotes live in the same table as invoices (same lines, totals and printing), told apart by `kind`.
+    # A quote's outcome (accepted / declined) and the invoice it became are kept alongside.
+    """
+    ALTER TABLE invoices ADD COLUMN kind TEXT NOT NULL DEFAULT 'invoice' CHECK (kind IN ('invoice', 'quote'));
+    ALTER TABLE invoices ADD COLUMN outcome TEXT NOT NULL DEFAULT '' CHECK (outcome IN ('', 'accepted', 'declined'));
+    ALTER TABLE invoices ADD COLUMN converted_to INTEGER REFERENCES invoices(id);
+    CREATE INDEX invoices_by_kind ON invoices(kind, issue_date);
+    """,
 ]
 
 DEFAULTS = {
@@ -212,7 +220,8 @@ class Store:
         inv = Invoice(client_id=row["client_id"], currency=row["currency"], issue_date=date.fromisoformat(row["issue_date"]),
                       due_date=date.fromisoformat(row["due_date"]), state=row["state"], number=row["number"],
                       discount_type=row["discount_type"], discount_value=Decimal(row["discount_value"]),
-                      reference=row["reference"], notes=row["notes"], id=row["id"], created=row["created"], issued_at=row["issued_at"])
+                      reference=row["reference"], notes=row["notes"], id=row["id"], created=row["created"], issued_at=row["issued_at"],
+                      kind=row["kind"], outcome=row["outcome"], converted_to=row["converted_to"])
         inv.items = [Item(r["description"], Decimal(r["quantity"]), Decimal(r["unit_price"]), Decimal(r["tax_rate"]))
                      for r in self.db.execute("SELECT * FROM items WHERE invoice_id = ? ORDER BY position", (inv.id,))]
         inv.payments = [Payment(date.fromisoformat(r["date"]), Decimal(r["amount"]), r["method"], r["note"], r["id"])
