@@ -90,3 +90,23 @@ def test_port_already_in_use(run):
 def test_no_command_prints_help(run):
     code, out, _ = run()
     assert code == 0 and "serve" in out
+
+
+def test_quote_to_invoice(run):
+    run("client", "add", "Acme")
+    code, out, _ = run("quote", "new", "Acme", "-l", "Website | 1 | 2,000", "--send")
+    assert code == 0 and "Q-2026-0001" in out and "valid until 2026-07-15" in out
+    assert "Sent" in run("quote", "list", "--status", "open")[1]
+    assert "No invoices." in run("invoice", "list")[1]
+    code, _, err = run("invoice", "void", "Q-2026-0001")
+    assert code == 1 and "is a quote" in err and "billwise quote" in err
+    code, _, err = run("pay", "Q-2026-0001", "10")
+    assert code == 1 and "is a quote" in err
+    assert "declined" in run("quote", "decline", "Q-2026-0001")[1]
+    assert "convert" in run("quote", "accept", "Q-2026-0001")[1]
+    code, out, _ = run("quote", "convert", "Q-2026-0001")
+    assert code == 0 and "$2,000.00" in out
+    assert "Invoiced" in run("quote", "show", "Q-2026-0001")[1]
+    _, out, _ = run("invoice", "list")
+    assert "Draft 2" in out and "Q-2026-0001" not in out
+    assert "INV-2026-0001" in run("invoice", "issue", "2")[1]

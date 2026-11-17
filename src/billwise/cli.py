@@ -10,7 +10,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from . import __version__, reports
-from .model import STATUSES, Client, Invoice, InvoiceError, Item, Payment
+from .model import QUOTE_STATUSES, STATUSES, Client, Invoice, InvoiceError, Item, Payment
 from .money import MoneyError, format_money, format_rate, parse_decimal
 from .render import STATUS_TEXT, invoice_document, nice_date, number_text
 from .store import DEFAULTS, Store, StoreError, default_path
@@ -95,6 +95,56 @@ def show_invoice(store: Store, inv: Invoice, today: date) -> None:
             out(f"  #{p.id}  {p.date}  {m(p.amount)}" + (f"  {p.method}" if p.method else "") + (f"  ({p.note})" if p.note else ""))
 
 
+def add_document_commands(sub, kind: str) -> None:
+    """`billwise invoice ...` and `billwise quote ...` share their commands; quotes add accept, decline, reopen and convert."""
+    quote = kind == "quote"
+    example = "Q-2026-0001" if quote else "INV-2026-0001"
+    i = sub.add_parser(kind, help="send quotes and turn accepted ones into invoices" if quote else "create, issue and manage invoices")
+    i = i.add_subparsers(dest="action", metavar="action", required=True)
+    s = i.add_parser("new", help=f"start a {kind} (a draft) for a client")
+    s.add_argument("client")
+    s.add_argument("-l", "--line", action="append", default=[], metavar="'DESC | QTY | PRICE | TAX%'", help="add a line (repeatable)")
+    s.add_argument("--date", type=day, help=f"{kind} date (default today)")
+    s.add_argument("--due", "--valid-until", type=day, dest="due",
+                   help="valid until (default: today + your quote validity)" if quote else "due date (default: today + your payment terms)")
+    s.add_argument("--currency")
+    s.add_argument("--discount", help="10%% for percent off, or an amount like 50")
+    s.add_argument("--reference", default="", help="the client's PO number or similar")
+    s.add_argument("--notes", default="")
+    s.add_argument("--issue", "--send", action="store_true", dest="issue", help="issue it straight away")
+    s = i.add_parser("add-line", help="add a line to a draft")
+    s.add_argument(kind)
+    s.add_argument("line", metavar="'DESC | QTY | PRICE | TAX%'")
+    s = i.add_parser("remove-line", help="remove a line from a draft")
+    s.add_argument(kind)
+    s.add_argument("number", type=int, help=f"line number as shown by '{kind} show'")
+    s = i.add_parser("set", help="change a draft's dates, discount, reference or notes")
+    s.add_argument(kind)
+    s.add_argument("--date", type=day)
+    s.add_argument("--due", "--valid-until", type=day, dest="due")
+    s.add_argument("--currency")
+    s.add_argument("--discount")
+    s.add_argument("--reference")
+    s.add_argument("--notes")
+    s = i.add_parser("list", help=f"list {kind}s")
+    if quote:
+        s.add_argument("--status", choices=QUOTE_STATUSES + ("open",), help="'open' means sent and waiting for an answer")
+    else:
+        s.add_argument("--status", choices=STATUSES + ("open",), help="'open' means anything still owed")
+    s.add_argument("--client")
+    actions = [("show", f"a {kind}'s lines and totals" + ("" if quote else " and payments")),
+               ("issue", "give a draft its number and lock it" + (" (send it)" if quote else "")),
+               ("void", f"cancel an issued {kind}"), ("delete", "delete a draft"), ("duplicate", "copy into a new draft")]
+    if quote:
+        actions += [("accept", "the client said yes"), ("decline", "the client said no"), ("reopen", "clear the client's answer"),
+                    ("convert", "turn the quote into a draft invoice")]
+    for action, text in actions:
+        i.add_parser(action, help=text).add_argument(kind, help=f"number ({example}) or id")
+    s = i.add_parser("html", help=f"save the {kind} as a printable HTML page")
+    s.add_argument(kind)
+    s.add_argument("-o", "--output", type=Path, help="file to write (default: <number>.html)")
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="billwise", description="Invoices, clients and payments, kept on your own computer.")
     p.add_argument("--version", action="version", version=f"billwise {__version__}")
@@ -124,40 +174,8 @@ def build_parser() -> argparse.ArgumentParser:
     for opt in ("name", "email", "address", "tax-id", "notes"):
         s.add_argument("--" + opt)
 
-    i = sub.add_parser("invoice", help="create, issue and manage invoices").add_subparsers(dest="action", metavar="action", required=True)
-    s = i.add_parser("new", help="start an invoice (a draft) for a client")
-    s.add_argument("client")
-    s.add_argument("-l", "--line", action="append", default=[], metavar="'DESC | QTY | PRICE | TAX%'", help="add a line (repeatable)")
-    s.add_argument("--date", type=day, help="invoice date (default today)")
-    s.add_argument("--due", type=day, help="due date (default: today + your payment terms)")
-    s.add_argument("--currency")
-    s.add_argument("--discount", help="10%% for percent off, or an amount like 50")
-    s.add_argument("--reference", default="", help="the client's PO number or similar")
-    s.add_argument("--notes", default="")
-    s.add_argument("--issue", action="store_true", help="issue it straight away")
-    s = i.add_parser("add-line", help="add a line to a draft")
-    s.add_argument("invoice")
-    s.add_argument("line", metavar="'DESC | QTY | PRICE | TAX%'")
-    s = i.add_parser("remove-line", help="remove a line from a draft")
-    s.add_argument("invoice")
-    s.add_argument("number", type=int, help="line number as shown by 'invoice show'")
-    s = i.add_parser("set", help="change a draft's dates, discount, reference or notes")
-    s.add_argument("invoice")
-    s.add_argument("--date", type=day)
-    s.add_argument("--due", type=day)
-    s.add_argument("--currency")
-    s.add_argument("--discount")
-    s.add_argument("--reference")
-    s.add_argument("--notes")
-    s = i.add_parser("list", help="list invoices")
-    s.add_argument("--status", choices=STATUSES + ("open",), help="'open' means anything still owed")
-    s.add_argument("--client")
-    for action, text in (("show", "an invoice's lines, totals and payments"), ("issue", "give a draft its number and lock it"),
-                         ("void", "cancel an issued invoice"), ("delete", "delete a draft"), ("duplicate", "copy into a new draft")):
-        i.add_parser(action, help=text).add_argument("invoice", help="number (INV-2026-0001) or id")
-    s = i.add_parser("html", help="save the invoice as a printable HTML page")
-    s.add_argument("invoice")
-    s.add_argument("-o", "--output", type=Path, help="file to write (default: <number>.html)")
+    add_document_commands(sub, "invoice")
+    add_document_commands(sub, "quote")
 
     s = sub.add_parser("pay", help="record a payment against an invoice")
     s.add_argument("invoice")
@@ -253,11 +271,11 @@ def run(args: argparse.Namespace, store: Store, today: date) -> int:
             out(f"Saved {client.name}.")
         return 0
 
-    if cmd == "invoice":
-        return run_invoice(args, store, today)
+    if cmd in ("invoice", "quote"):
+        return run_invoice(args, store, today, cmd)
 
     if cmd == "pay":
-        inv = store.find_invoice(args.invoice)
+        inv = find(store, args.invoice, "invoice")
         amount = parse_decimal(args.amount, "the payment") if args.amount else inv.totals().balance
         inv = store.add_payment(inv.id, Payment(args.date or today, amount, args.method, args.note))  # type: ignore[arg-type]
         left = inv.totals().balance
@@ -266,7 +284,7 @@ def run(args: argparse.Namespace, store: Store, today: date) -> int:
         return 0
 
     if cmd == "unpay":
-        inv = store.find_invoice(args.invoice)
+        inv = find(store, args.invoice, "invoice")
         store.delete_payment(inv.id, args.payment_id)  # type: ignore[arg-type]
         out(f"Removed payment #{args.payment_id} from {inv.label}.")
         return 0
@@ -291,9 +309,15 @@ def run(args: argparse.Namespace, store: Store, today: date) -> int:
     return 2
 
 
-def print_invoices(invoices: list[Invoice], names: dict[int, str], today: date) -> None:
+def print_invoices(invoices: list[Invoice], names: dict[int, str], today: date, kind: str = "invoice") -> None:
     if not invoices:
-        out("No invoices.")
+        out(f"No {kind}s.")
+        return
+    if kind == "quote":
+        rows = [["Quote", "Client", "Date", "Valid until", "Total", "Status"]]
+        rows += [[q.label, names.get(q.client_id, "?"), str(q.issue_date), str(q.due_date), format_money(q.totals().total, q.currency),
+                  STATUS_TEXT[q.status(today)]] for q in invoices]
+        out(table(rows, {4}))
         return
     rows = [["Invoice", "Client", "Date", "Due", "Total", "Owed", "Status"]]
     for inv in invoices:
@@ -303,14 +327,24 @@ def print_invoices(invoices: list[Invoice], names: dict[int, str], today: date) 
     out(table(rows, {4, 5}))
 
 
-def run_invoice(args: argparse.Namespace, store: Store, today: date) -> int:
+def find(store: Store, text: str, kind: str) -> Invoice:
+    """An invoice or quote by number or id, refusing the other kind so `billwise invoice void Q-...` can't void a quote."""
+    found = store.find_invoice(text)
+    if found.kind != kind:
+        raise InvoiceError(f"{found.label} is {'a quote' if found.is_quote else 'an invoice'}; use 'billwise {found.kind} ...'")
+    return found
+
+
+def run_invoice(args: argparse.Namespace, store: Store, today: date, kind: str = "invoice") -> int:
     action = args.action
+    quote = kind == "quote"
     default_tax = Decimal(store.setting("default_tax_rate"))
     if action == "new":
         client = store.find_client(args.client)
         items = [parse_line(text, default_tax) for text in args.line]  # read everything before saving anything
         discount = parse_discount(args.discount) if args.discount else ("none", Decimal(0))
-        inv = store.new_invoice(client.id, issue_date=args.date or today, due_date=args.due, currency=args.currency)  # type: ignore[arg-type]
+        inv = store.new_invoice(client.id, issue_date=args.date or today, due_date=args.due, currency=args.currency,  # type: ignore[arg-type]
+                                kind=kind)
         inv.items = items
         inv.discount_type, inv.discount_value = discount
         inv.reference, inv.notes = args.reference, args.notes
@@ -321,21 +355,23 @@ def run_invoice(args: argparse.Namespace, store: Store, today: date) -> int:
             raise
         if args.issue:
             inv = store.issue(inv.id)  # type: ignore[arg-type]
-            out(f"Issued {inv.label} for {client.name}: {format_money(inv.totals().total, inv.currency)}, due {inv.due_date}.")
+            out(f"Issued {inv.label} for {client.name}: {format_money(inv.totals().total, inv.currency)}, "
+                + (f"valid until {inv.due_date}." if quote else f"due {inv.due_date}."))
         else:
-            out(f"Created {inv.label} for {client.name}. Add lines with: billwise invoice add-line {inv.id} \"Work | 1 | 100\"")
-            out(f"Issue it with: billwise invoice issue {inv.id}")
+            out(f"Created {inv.label} for {client.name}. Add lines with: billwise {kind} add-line {inv.id} \"Work | 1 | 100\"")
+            out(f"Issue it with: billwise {kind} issue {inv.id}")
         return 0
     if action == "list":
         names = {c.id: c.name for c in store.clients(archived=True)}
-        invoices = store.invoices(client_id=store.find_client(args.client).id) if args.client else store.invoices()
+        client_id = store.find_client(args.client).id if args.client else None
+        invoices = store.invoices(client_id=client_id, kind=kind)
         if args.status == "open":
-            invoices = reports.open_invoices(invoices, today)
+            invoices = [q for q in invoices if q.status(today) == "sent"] if quote else reports.open_invoices(invoices, today)
         elif args.status:
             invoices = [i for i in invoices if i.status(today) == args.status]
-        print_invoices(invoices, names, today)  # type: ignore[arg-type]
+        print_invoices(invoices, names, today, kind)  # type: ignore[arg-type]
         return 0
-    inv = store.find_invoice(args.invoice)
+    inv = find(store, getattr(args, kind), kind)
     assert inv.id is not None
     if action == "show":
         show_invoice(store, inv, today)
@@ -366,8 +402,9 @@ def run_invoice(args: argparse.Namespace, store: Store, today: date) -> int:
         out(f"Saved {inv.label}.")
     elif action == "issue":
         inv = store.issue(inv.id)
-        out(f"Issued {inv.label}: {format_money(inv.totals().total, inv.currency)}, due {inv.due_date}.")
-        out(f"Make a printable copy with: billwise invoice html {inv.label}")
+        out(f"Issued {inv.label}: {format_money(inv.totals().total, inv.currency)}, "
+            + (f"valid until {inv.due_date}." if quote else f"due {inv.due_date}."))
+        out(f"Make a printable copy with: billwise {kind} html {inv.label}")
     elif action == "void":
         out(f"{store.void(inv.id).label} is void.")
     elif action == "delete":
@@ -376,6 +413,14 @@ def run_invoice(args: argparse.Namespace, store: Store, today: date) -> int:
     elif action == "duplicate":
         new = store.duplicate(inv.id, issue_date=today)
         out(f"Copied {inv.label} into {new.label}.")
+    elif action in ("accept", "decline", "reopen"):
+        outcome = {"accept": "accepted", "decline": "declined", "reopen": ""}[action]
+        inv = store.set_outcome(inv.id, outcome)
+        out(f"{inv.label} is {STATUS_TEXT[inv.status(today)].lower()}." + (f" Turn it into an invoice with: billwise quote convert {inv.label}"
+                                                                         if outcome == "accepted" else ""))
+    elif action == "convert":
+        new = store.convert(inv.id, issue_date=today)
+        out(f"Made {new.label} from {inv.label} ({format_money(new.totals().total, new.currency)}). Check it, then: billwise invoice issue {new.id}")
     elif action == "html":
         target = args.output or Path(f"{inv.label.replace(' ', '-')}.html")
         target.write_text(invoice_document(inv, store.client(inv.client_id), store.settings(), today), encoding="utf-8")
