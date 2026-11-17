@@ -60,6 +60,8 @@ DEFAULTS = {
     "payment_details": "",
     "footer": "Thank you for your business.",
     "default_tax_rate": "0",
+    "quote_number_format": "Q-{YYYY}-{NNNN}",
+    "quote_valid_days": "30",
 }
 
 
@@ -145,8 +147,12 @@ class Store:
                 if not value.isdigit() or int(value) > 365:
                     raise InvoiceError("payment terms should be a number of days from 0 to 365")
                 value = str(int(value))
-            elif key == "number_format":
+            elif key in ("number_format", "quote_number_format"):
                 value = check_number_format(value)
+            elif key == "quote_valid_days":
+                if not value.isdigit() or not 1 <= int(value) <= 365:
+                    raise InvoiceError("quotes should be valid for 1 to 365 days")
+                value = str(int(value))
             elif key == "default_tax_rate":
                 rate = parse_decimal(value, "default tax rate")
                 if rate > 100:
@@ -244,10 +250,17 @@ class Store:
             return self.invoice(int(text.lstrip("#")))
         raise InvoiceError(f"there's no invoice {text!r}")
 
-    def invoices(self, *, client_id: int | None = None) -> list[Invoice]:
-        sql, args = "SELECT * FROM invoices", ()
+    def invoices(self, *, client_id: int | None = None, kind: str | None = "invoice") -> list[Invoice]:
+        """Invoices by default. Quotes are asked for explicitly (kind="quote", or None for both), so a quote can never
+        slip into what's owed, income or tax."""
+        where, args = [], []
+        if kind is not None:
+            where.append("kind = ?")
+            args.append(kind)
         if client_id is not None:
-            sql, args = sql + " WHERE client_id = ?", (client_id,)
+            where.append("client_id = ?")
+            args.append(client_id)
+        sql = "SELECT * FROM invoices" + (" WHERE " + " AND ".join(where) if where else "")
         return [self._invoice(r) for r in self.db.execute(sql + " ORDER BY issue_date DESC, id DESC", args)]
 
     def _check(self, inv: Invoice) -> None:
@@ -255,7 +268,8 @@ class Store:
         inv.currency = check_currency(inv.currency)
         check_discount(inv.discount_type, inv.discount_value)
         if inv.due_date < inv.issue_date:
-            raise InvoiceError("the due date can't be before the invoice date")
+            raise InvoiceError("the valid-until date can't be before the quote date" if inv.is_quote
+                               else "the due date can't be before the invoice date")
         for item in inv.items:
             item.validate()
         if len(inv.items) > 500:
@@ -267,18 +281,22 @@ class Store:
                             [(inv.id, i, it.description, str(it.quantity), str(it.unit_price), str(it.tax_rate)) for i, it in enumerate(inv.items)])
 
     def new_invoice(self, client_id: int, *, issue_date: date | None = None, due_date: date | None = None,
-                    currency: str | None = None) -> Invoice:
-        """A new draft for a client, dated today and due after the usual payment terms."""
+                    currency: str | None = None, kind: str = "invoice") -> Invoice:
+        """A new draft for a client, dated today and due after the usual payment terms (a quote: valid for the usual days)."""
+        if kind not in ("invoice", "quote"):
+            raise InvoiceError(f"unknown kind {kind!r}")
         settings = self.settings()
         issue = issue_date or date.today()
+        days = int(settings["quote_valid_days" if kind == "quote" else "terms_days"])
         inv = Invoice(client_id=client_id, currency=currency or settings["currency"], issue_date=issue,
-                      due_date=due_date or issue + timedelta(days=int(settings["terms_days"])), created=now_iso())
+                      due_date=due_date or issue + timedelta(days=days), created=now_iso(), kind=kind)
         self._check(inv)
         if self.client(client_id).archived:
             raise InvoiceError("this client is archived; restore them first")
         with self.db:
-            cur = self.db.execute("INSERT INTO invoices (client_id, state, currency, issue_date, due_date, created) VALUES (?, 'draft', ?, ?, ?, ?)",
-                                  (inv.client_id, inv.currency, inv.issue_date.isoformat(), inv.due_date.isoformat(), inv.created))
+            cur = self.db.execute("INSERT INTO invoices (client_id, state, currency, issue_date, due_date, created, kind) "
+                                  "VALUES (?, 'draft', ?, ?, ?, ?, ?)",
+                                  (inv.client_id, inv.currency, inv.issue_date.isoformat(), inv.due_date.isoformat(), inv.created, kind))
         inv.id = cur.lastrowid
         return inv
 
@@ -296,7 +314,8 @@ class Store:
             self._write_items(inv)
 
     def issue(self, invoice_id: int) -> Invoice:
-        """Give a draft its number and lock it. Numbers are handed out in order with no gaps, per year if the format has one."""
+        """Give a draft its number and lock it. Numbers are handed out in order with no gaps, per year if the format has one.
+        Quotes have their own format and counter, so sending quotes never leaves gaps in the invoice numbers."""
         inv = self.invoice(invoice_id)
         if inv.state != "draft":
             raise InvoiceError(f"{inv.label} has already been issued")
@@ -304,8 +323,9 @@ class Store:
             raise InvoiceError("add at least one line before issuing")
         if inv.totals().total < 0:
             raise InvoiceError("the total can't be negative")
-        fmt = self.setting("number_format")
-        key = f"seq:{inv.issue_date.year}" if re.search(r"\{YY(YY)?\}", fmt) else "seq:all"
+        fmt = self.setting("quote_number_format" if inv.is_quote else "number_format")
+        counter = "seq:quote:" if inv.is_quote else "seq:"
+        key = counter + (str(inv.issue_date.year) if re.search(r"\{YY(YY)?\}", fmt) else "all")
         with self.db:
             row = self.db.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
             seq = int(row["value"]) if row else 0
@@ -325,6 +345,8 @@ class Store:
             raise InvoiceError("a draft can just be deleted")
         if inv.state == "void":
             raise InvoiceError(f"{inv.label} is already void")
+        if inv.converted_to:
+            raise InvoiceError(f"{inv.label} has already become an invoice; void that invoice instead")
         if inv.payments:
             raise InvoiceError(f"{inv.label} has payments recorded; remove or refund them before voiding")
         with self.db:
@@ -343,16 +365,58 @@ class Store:
         old = self.invoice(invoice_id)
         if self.client(old.client_id).archived:
             raise InvoiceError("this client is archived; restore them first")
-        new = self.new_invoice(old.client_id, issue_date=issue_date, currency=old.currency)
+        new = self.new_invoice(old.client_id, issue_date=issue_date, currency=old.currency, kind=old.kind)
         new.items = [Item(i.description, i.quantity, i.unit_price, i.tax_rate) for i in old.items]
         new.discount_type, new.discount_value, new.notes, new.reference = old.discount_type, old.discount_value, old.notes, old.reference
         self.save_draft(new)
         return self.invoice(new.id)  # type: ignore[arg-type]
 
+    # -- quotes ----------------------------------------------------------------------------------
+
+    def _sent_quote(self, quote_id: int) -> Invoice:
+        quote = self.invoice(quote_id)
+        if not quote.is_quote:
+            raise InvoiceError(f"{quote.label} is an invoice, not a quote")
+        if quote.state == "draft":
+            raise InvoiceError("send the quote first (issue it), then record the client's answer")
+        if quote.state == "void":
+            raise InvoiceError(f"{quote.label} is void")
+        if quote.converted_to:
+            raise InvoiceError(f"{quote.label} has already become invoice {self.invoice(quote.converted_to).label}")
+        return quote
+
+    def set_outcome(self, quote_id: int, outcome: str) -> Invoice:
+        """Record the client's answer to a sent quote: accepted, declined, or "" to undo a mistake."""
+        if outcome not in ("", "accepted", "declined"):
+            raise InvoiceError("a quote can be accepted or declined")
+        self._sent_quote(quote_id)
+        with self.db:
+            self.db.execute("UPDATE invoices SET outcome = ? WHERE id = ?", (outcome, quote_id))
+        return self.invoice(quote_id)
+
+    def convert(self, quote_id: int, *, issue_date: date | None = None) -> Invoice:
+        """Turn a sent quote into a draft invoice with the same lines, discount and notes, and mark the quote accepted.
+        A quote becomes an invoice at most once; a declined quote can't be converted until the answer is changed."""
+        quote = self._sent_quote(quote_id)
+        if quote.outcome == "declined":
+            raise InvoiceError(f"{quote.label} was declined; mark it accepted first if the client changed their mind")
+        if self.client(quote.client_id).archived:
+            raise InvoiceError("this client is archived; restore them first")
+        inv = self.new_invoice(quote.client_id, issue_date=issue_date, currency=quote.currency)
+        inv.items = [Item(i.description, i.quantity, i.unit_price, i.tax_rate) for i in quote.items]
+        inv.discount_type, inv.discount_value, inv.notes = quote.discount_type, quote.discount_value, quote.notes
+        inv.reference = quote.reference or quote.label
+        self.save_draft(inv)
+        with self.db:
+            self.db.execute("UPDATE invoices SET outcome = 'accepted', converted_to = ? WHERE id = ?", (inv.id, quote_id))
+        return self.invoice(inv.id)  # type: ignore[arg-type]
+
     # -- payments --------------------------------------------------------------------------------
 
     def add_payment(self, invoice_id: int, payment: Payment, *, allow_overpay: bool = False) -> Invoice:
         inv = self.invoice(invoice_id)
+        if inv.is_quote:
+            raise InvoiceError(f"{inv.label} is a quote; turn it into an invoice to record payments")
         if inv.state == "draft":
             raise InvoiceError("issue the invoice before recording a payment")
         if inv.state == "void":

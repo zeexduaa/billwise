@@ -8,7 +8,8 @@ from html import escape
 from .model import Client, Invoice
 from .money import format_money, format_rate
 
-STATUS_TEXT = {"draft": "Draft", "unpaid": "Unpaid", "partial": "Partly paid", "overdue": "Overdue", "paid": "Paid", "void": "Void"}
+STATUS_TEXT = {"draft": "Draft", "unpaid": "Unpaid", "partial": "Partly paid", "overdue": "Overdue", "paid": "Paid", "void": "Void",
+               "sent": "Sent", "accepted": "Accepted", "declined": "Declined", "expired": "Expired", "converted": "Invoiced"}
 
 
 def e(value: object) -> str:

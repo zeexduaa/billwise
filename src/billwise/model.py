@@ -162,6 +162,12 @@ def compute_totals(inv: Invoice) -> Totals:
 def status_of(inv: Invoice, today: date) -> str:
     if inv.state in ("draft", "void"):
         return inv.state
+    if inv.is_quote:
+        if inv.converted_to:
+            return "converted"
+        if inv.outcome:
+            return inv.outcome
+        return "expired" if inv.due_date < today else "sent"
     t = inv.totals()
     if t.balance <= 0:
         return "paid"
@@ -171,6 +177,7 @@ def status_of(inv: Invoice, today: date) -> str:
 
 
 STATUSES = ("draft", "unpaid", "partial", "overdue", "paid", "void")
+QUOTE_STATUSES = ("draft", "sent", "accepted", "declined", "expired", "converted", "void")
 
 
 def check_discount(kind: str, value: Decimal) -> None:
