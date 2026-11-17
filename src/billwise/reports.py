@@ -91,6 +91,56 @@ def client_balances(invoices: list[Invoice], today: date) -> dict[tuple[int, str
     return out
 
 
+@dataclass
+class StatementLine:
+    day: date
+    text: str
+    charge: Decimal     # what was invoiced
+    credit: Decimal     # what was paid
+    balance: Decimal    # running balance after this line
+    invoice_id: int | None = None
+
+
+@dataclass
+class Statement:
+    currency: str
+    opening: Decimal
+    lines: list[StatementLine]
+
+    @property
+    def closing(self) -> Decimal:
+        return self.lines[-1].balance if self.lines else self.opening
+
+
+def statement(invoices: list[Invoice], start: date | None = None, end: date | None = None) -> dict[str, Statement]:
+    """One client's account over a period, per currency: the balance brought forward, then every invoice (a charge) and
+    payment (a credit) in date order with a running balance. Drafts, voided invoices and quotes aren't part of it."""
+    events: dict[str, list[tuple[date, int, str, Decimal, Decimal, int | None]]] = {}
+    opening: dict[str, Decimal] = {}
+    for inv in invoices:
+        if inv.state != "issued" or inv.is_quote:
+            continue
+        cur = inv.currency
+        opening.setdefault(cur, ZERO)
+        entries = [(inv.issue_date, 0, f"Invoice {inv.label}" + (f" ({inv.reference})" if inv.reference else ""), inv.totals().total, ZERO)]
+        entries += [(p.date, 1, f"Payment for {inv.label}" + (f", {p.method}" if p.method else ""), ZERO, p.amount) for p in inv.payments]
+        for day, order, text, charge, credit in entries:
+            if start and day < start:
+                opening[cur] += charge - credit
+            elif not end or day <= end:
+                events.setdefault(cur, []).append((day, order, text, charge, credit, inv.id))
+    out = {}
+    for cur in sorted(opening):
+        balance = opening[cur]
+        lines = []
+        # Same day: invoices before payments, so a same-day payment never shows a negative balance in between.
+        for day, _, text, charge, credit, inv_id in sorted(events.get(cur, []), key=lambda x: (x[0], x[1], x[5] or 0)):
+            balance += charge - credit
+            lines.append(StatementLine(day, text, charge, credit, balance, inv_id))
+        out[cur] = Statement(cur, opening[cur], lines)
+    return out
+
+
 # -- CSV -----------------------------------------------------------------------------------------
 
 def _cell(value: object) -> str:
