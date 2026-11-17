@@ -12,7 +12,7 @@ from pathlib import Path
 from . import __version__, reports
 from .model import QUOTE_STATUSES, STATUSES, Client, Invoice, InvoiceError, Item, Payment
 from .money import MoneyError, format_money, format_rate, parse_decimal
-from .render import STATUS_TEXT, invoice_document, nice_date, number_text
+from .render import STATUS_TEXT, invoice_document, nice_date, number_text, statement_document
 from .store import DEFAULTS, Store, StoreError, default_path
 
 
@@ -169,6 +169,11 @@ def build_parser() -> argparse.ArgumentParser:
     for action, text in (("show", "a client's details and invoices"), ("archive", "hide a client you no longer work with"),
                          ("restore", "bring back an archived client"), ("delete", "delete a client who has no invoices")):
         c.add_parser(action, help=text).add_argument("client", help="id or (part of the) name")
+    s = c.add_parser("statement", help="a client's invoices and payments with a running balance")
+    s.add_argument("client")
+    s.add_argument("--from", dest="start", type=day, help="start date (earlier activity becomes the balance brought forward)")
+    s.add_argument("--to", dest="end", type=day, help="end date (default today)")
+    s.add_argument("-o", "--output", type=Path, help="also save a printable HTML page")
     s = c.add_parser("edit", help="change a client's details")
     s.add_argument("client")
     for opt in ("name", "email", "address", "tax-id", "notes"):
@@ -262,6 +267,25 @@ def run(args: argparse.Namespace, store: Store, today: date) -> int:
             client = store.find_client(args.client)
             store.delete_client(client.id)  # type: ignore[arg-type]
             out(f"Deleted {client.name}.")
+        elif args.action == "statement":
+            client = store.find_client(args.client)
+            end = args.end or today
+            statements = reports.statement(store.invoices(client_id=client.id), args.start, end)  # type: ignore[arg-type]
+            out(f"Statement for {client.name}, " + (f"{args.start} to {end}" if args.start else f"up to {end}"))
+            if not statements:
+                out("No invoices for this client yet.")
+            for cur, st in statements.items():
+                m = lambda a: format_money(a, cur) if a else ""  # noqa: E731
+                rows = [["Date", "Details", "Invoiced", "Paid", "Balance"]]
+                if args.start:
+                    rows.append([str(args.start), "Balance brought forward", "", "", format_money(st.opening, cur)])
+                rows += [[str(x.day), x.text, m(x.charge), m(x.credit), format_money(x.balance, cur)] for x in st.lines]
+                out()
+                out(table(rows, {2, 3, 4}))
+                out(f"\n{'Balance due' if st.closing > 0 else 'Balance'}: {format_money(st.closing, cur)}")
+            if args.output:
+                args.output.write_text(statement_document(client, statements, store.settings(), args.start, end), encoding="utf-8")
+                out(f"Wrote {args.output}")
         elif args.action == "edit":
             client = store.find_client(args.client)
             for key in ("name", "email", "address", "tax_id", "notes"):

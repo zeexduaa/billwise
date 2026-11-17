@@ -110,3 +110,15 @@ def test_quote_to_invoice(run):
     _, out, _ = run("invoice", "list")
     assert "Draft 2" in out and "Q-2026-0001" not in out
     assert "INV-2026-0001" in run("invoice", "issue", "2")[1]
+
+
+def test_client_statement(run, tmp_path):
+    run("client", "add", "Acme")
+    run("invoice", "new", "Acme", "--date", "2026-04-01", "-l", "Work | 500", "--issue")
+    run("pay", "INV-2026-0001", "200", "--date", "2026-04-10", "--method", "Cash")
+    run("invoice", "new", "Acme", "--date", "2026-05-01", "-l", "More work | 100", "--issue")
+    code, out, _ = run("client", "statement", "Acme")
+    assert code == 0 and "Payment for INV-2026-0001, Cash" in out and "Balance due: $400.00" in out
+    page = tmp_path / "s.html"
+    _, out, _ = run("client", "statement", "Acme", "--from", "2026-05-01", "-o", str(page))
+    assert "Balance brought forward" in out and "$300.00" in out and "STATEMENT" in page.read_text(encoding="utf-8")
