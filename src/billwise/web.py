@@ -19,7 +19,7 @@ from urllib.parse import parse_qs, quote, urlsplit
 from . import __version__, reports
 from .model import QUOTE_STATUSES, STATUSES, Client, Invoice, InvoiceError, Item, Payment
 from .money import MoneyError, format_money, format_rate, parse_decimal
-from .render import STATUS_TEXT, e, invoice_document, nice_date, number_text
+from .render import STATUS_TEXT, e, invoice_document, nice_date, number_text, statement_document
 from .store import DEFAULTS, Store
 
 MAX_BODY = 1_000_000
@@ -256,6 +256,7 @@ class App:
             ("GET", r"/clients/(\d+)", self.client_view),
             ("POST", r"/clients/(\d+)", self.client_save),
             ("POST", r"/clients/(\d+)/archive", self.client_archive),
+            ("GET", r"/clients/(\d+)/statement", self.client_statement),
             ("POST", r"/clients/(\d+)/delete", self.client_delete),
             ("GET", r"/reports", self.reports_page),
             ("GET", r"/export/invoices.csv", self.export_invoices),
@@ -682,6 +683,8 @@ class App:
         quotes = self.store.invoices(client_id=client_id, kind="quote")
         actions = [f"<a class='btn primary' href='/invoices/new?client={client.id}'>+ New invoice</a>",
                    f"<a class='btn' href='/quotes/new?client={client.id}'>+ New quote</a>"] if not client.archived else []
+        if invoices:
+            actions.append(f"<a class='btn' href='/clients/{client.id}/statement' target='_blank' rel='noopener'>Statement</a>")
         actions.append(self.button(f"/clients/{client.id}/archive", "Restore" if client.archived else "Archive"))
         if not invoices and not quotes:
             actions.append(self.button(f"/clients/{client.id}/delete", "Delete", "btn danger", f"Delete {client.name}?"))
@@ -701,6 +704,19 @@ class App:
         except InvoiceError as err:
             return self.client_view(query, form, client_id, str(err), client)
         return self.done("Saved.", f"/clients/{client_id}")
+
+    def client_statement(self, query, form, client_id: int) -> Response:
+        client = self.store.client(client_id)
+        start = parse_date(self.one(query, "from"), "the start date") if self.one(query, "from") else None
+        end = parse_date(self.one(query, "to"), "the end date") if self.one(query, "to") else self.today()
+        if start and end < start:
+            raise Problem("the end date is before the start date")
+        statements = reports.statement(self.store.invoices(client_id=client_id), start, end)
+        toolbar = (f"<form class='toolbar' method='get'><a href='/clients/{client.id}'>Back</a>"
+                   f"<input type='date' name='from' value='{start or ''}' aria-label='From'><input type='date' name='to' value='{end}' aria-label='To'>"
+                   f"<button>Show</button><button type='button' data-print>Print / Save as PDF</button></form>"
+                   "<script src='/static/app.js' defer></script>")
+        return Response.html(statement_document(client, statements, self.store.settings(), start, end, toolbar=toolbar))
 
     def client_archive(self, query, form, client_id: int) -> Response:
         client = self.store.client(client_id)

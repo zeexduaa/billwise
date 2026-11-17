@@ -60,6 +60,7 @@ table.items td.desc { white-space: pre-line; }
          padding: 2px 12px; font-size: 18px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; opacity: .6; }
 .stamp.paid { color: #1f8a4c; } .stamp.void, .stamp.overdue { color: #c0392b; } .stamp.draft { color: #8a8f99; }
 .toolbar { max-width: 820px; margin: 16px auto 0; display: flex; gap: 8px; justify-content: flex-end; }
+.toolbar input { font: inherit; padding: 6px 8px; border-radius: 8px; border: 1px solid #c9ced6; }
 .toolbar a, .toolbar button { font: inherit; padding: 7px 14px; border-radius: 8px; border: 1px solid #c9ced6; background: #fff; color: #1d2330; text-decoration: none; cursor: pointer; }
 @media (max-width: 700px) { .sheet { padding: 24px 18px; margin: 0; } .head, .meta { flex-direction: column; } .title { text-align: left; }
   .totals { min-width: 0; width: 100%; } }
@@ -131,6 +132,42 @@ def invoice_document(inv: Invoice, client: Client, settings: dict[str, str], tod
 <table class="items"><thead>{head}</thead><tbody>{rows or "<tr><td colspan='5' class='muted'>No lines yet.</td></tr>"}</tbody></table>
 <table class="totals">{''.join(totals)}</table>
 <div class="notes">{''.join(notes)}</div>
+<div class="foot">{e(settings.get('footer', ''))}</div>
+</main></body></html>
+"""
+
+
+def statement_document(client: Client, statements: dict, settings: dict[str, str], start: date | None, end: date,
+                       *, toolbar: str = "") -> str:
+    """A printable account statement for one client: one table per currency with a running balance."""
+    period = f"{nice_date(start)} to {nice_date(end)}" if start else f"Up to {nice_date(end)}"
+    business = settings.get("business_name") or "Your business name"
+    sections = []
+    for cur, st in statements.items():
+        m = lambda amount: e(format_money(amount, cur))  # noqa: E731
+        rows = [f"<tr><td>{e(nice_date(start))}</td><td>Balance brought forward</td><td class='n'></td><td class='n'></td>"
+                f"<td class='n'>{m(st.opening)}</td></tr>"] if start else []
+        rows += [f"<tr><td>{e(nice_date(line.day))}</td><td>{e(line.text)}</td><td class='n'>{m(line.charge) if line.charge else ''}</td>"
+                 f"<td class='n'>{m(line.credit) if line.credit else ''}</td><td class='n'>{m(line.balance)}</td></tr>" for line in st.lines]
+        if not rows:
+            rows = ["<tr><td colspan='5' class='muted'>Nothing in this period.</td></tr>"]
+        heading = f"<div class='label' style='margin-top:26px'>{e(cur)}</div>" if len(statements) > 1 else ""
+        sections.append(f"""{heading}<table class="items"><thead><tr><th>Date</th><th>Details</th><th class='n'>Invoiced</th>
+<th class='n'>Paid</th><th class='n'>Balance</th></tr></thead><tbody>{''.join(rows)}</tbody></table>
+<table class="totals"><tr class="total"><td>{'Balance due' if st.closing > 0 else 'Balance'}</td><td>{m(st.closing)}</td></tr></table>""")
+    body = "".join(sections) or "<p class='muted' style='margin-top:30px'>No invoices for this client yet.</p>"
+    owing = any(st.closing > 0 for st in statements.values())
+    pay = (f"<div class='notes'><div><div class='label'>How to pay</div><p>{e(settings['payment_details'])}</p></div></div>"
+           if owing and settings.get("payment_details") else "")
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Statement · {e(client.name)}</title><style>{INVOICE_CSS}</style></head>
+<body>{toolbar}<main class="sheet">
+<div class="head"><div class="from"><h1>{e(business)}</h1>{f"<div class='muted'>{lines(settings['business_address'])}</div>" if settings.get('business_address') else ""}</div>
+<div class="title"><h2>STATEMENT</h2><div class="muted">{e(period)}</div></div></div>
+<div class="meta"><div><div class="label">Account of</div><strong>{e(client.name)}</strong>
+{f"<div>{lines(client.address)}</div>" if client.address else ""}</div></div>
+{body}{pay}
 <div class="foot">{e(settings.get('footer', ''))}</div>
 </main></body></html>
 """

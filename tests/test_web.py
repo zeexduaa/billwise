@@ -214,3 +214,22 @@ def test_quote_settings(app):
     assert post(app, "/settings", quote_number_format="EST-{NNN}", quote_valid_days="10").status == 303
     assert app.store.setting("quote_valid_days") == "10"
     assert post(app, "/settings", quote_valid_days="0").status == 400
+
+
+def test_client_statement(app):
+    app.store.save_settings({"payment_details": "IBAN PK00 1234"})
+    app.store.add_client(Client("Acme", address="1 Main St"))
+    for day, amount in ((date(2026, 4, 1), "500"), (date(2026, 5, 1), "300")):
+        inv = app.store.new_invoice(1, issue_date=day)
+        inv.items = [Item("Work", D(1), D(amount))]
+        app.store.save_draft(inv)
+        app.store.issue(inv.id)
+    from billwise.model import Payment
+    app.store.add_payment(1, Payment(date(2026, 4, 15), D("500"), "Cash"))
+    assert "/clients/1/statement" in text(app.request("GET", "/clients/1"))
+    page = text(app.request("GET", "/clients/1/statement"))
+    assert "STATEMENT" in page and "Payment for INV-2026-0001, Cash" in page and "Balance due" in page and "$300.00" in page
+    assert "IBAN" in page
+    page = text(app.request("GET", "/clients/1/statement?from=2026-05-01&to=2026-06-15"))
+    assert "Balance brought forward" in page and "INV-2026-0001" not in page
+    assert app.request("GET", "/clients/1/statement?from=2026-06-01&to=2026-01-01").status == 400
